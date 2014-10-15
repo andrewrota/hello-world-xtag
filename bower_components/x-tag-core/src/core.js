@@ -15,6 +15,15 @@
         return pseudo.value.match(regexDigits).indexOf(String(event.keyCode)) > -1 == (pseudo.name == 'keypass') || null;
       }
     },
+    /*
+      - The prefix object generated here is added to the xtag object as xtag.prefix later in the code
+      - Prefix provides a variety of prefix variations for the browser in which your code is running
+      - The 4 variations of prefix are as follows:
+        * prefix.dom: the correct prefix case and form when used on DOM elements/style properties
+        * prefix.lowercase: a lowercase version of the prefix for use in various user-code situations
+        * prefix.css: the lowercase, dashed version of the prefix 
+        * prefix.js: addresses prefixed APIs present in global and non-Element contexts
+    */
     prefix = (function () {
       var styles = win.getComputedStyle(doc.documentElement, ''),
           pre = (Array.prototype.slice
@@ -35,7 +44,12 @@
 /*** Functions ***/
 
 // Utilities
-
+  
+  /*
+    This is an enhanced typeof check for all types of objects. Where typeof would normaly return
+    'object' for many common DOM objects (like NodeLists and HTMLCollections).
+    - For example: typeOf(document.children) will correctly return 'htmlcollection'
+  */
   var typeCache = {},
       typeString = typeCache.toString,
       typeRegexp = /\s([a-zA-Z]+)/;
@@ -43,7 +57,7 @@
     var type = typeString.call(obj);
     return typeCache[type] || (typeCache[type] = type.match(typeRegexp)[1].toLowerCase());
   }
-
+  
   function clone(item, type){
     var fn = clone[type || typeOf(item)];
     return fn ? fn(item) : item;
@@ -58,7 +72,11 @@
       while (i--) array[i] = clone(src[i]);
       return array;
     };
-
+  
+  /*
+    The toArray() method allows for conversion of any object to a true array. For types that
+    cannot be converted to an array, the method returns a 1 item array containing the passed-in object.
+  */
   var unsliceable = ['undefined', 'null', 'number', 'boolean', 'string', 'function'];
   function toArray(obj){
     return unsliceable.indexOf(typeOf(obj)) == -1 ?
@@ -101,7 +119,9 @@
 
   function wrapMixin(tag, key, pseudo, value, original){
     var fn = original[key];
-    if (!(key in original)) original[key] = value;
+    if (!(key in original)) {
+      original[key + (pseudo.match(':mixins') ? '' : ':mixins')] = value;
+    }
     else if (typeof original[key] == 'function') {
       if (!fn.__mixins__) fn.__mixins__ = [];
       fn.__mixins__.push(xtag.applyPseudos(pseudo, value, tag.pseudos));
@@ -284,7 +304,12 @@
       };
     }
   }
-
+  
+  var unwrapComment = /\/\*!?(?:\@preserve)?[ \t]*(?:\r\n|\n)([\s\S]*?)(?:\r\n|\n)\s*\*\//;
+  function parseMultiline(fn){
+    return unwrapComment.exec(fn.toString())[1];
+  }
+  
   var readyTags = {};
   function fireReady(name){
     readyTags[name] = (readyTags[name] || []).filter(function(obj){
@@ -321,27 +346,29 @@
       } else {
         return;
       }
-
+      xtag.tags[_name] = options || {};
       // save prototype for actual object creation below
       var basePrototype = options.prototype;
       delete options.prototype;
-
-      var tag = xtag.tags[_name] = applyMixins(xtag.merge({}, xtag.defaultOptions, options));
+      var tag = xtag.tags[_name].compiled = applyMixins(xtag.merge({}, xtag.defaultOptions, options));
 
       for (var z in tag.events) tag.events[z] = xtag.parseEvent(z, tag.events[z]);
       for (z in tag.lifecycle) tag.lifecycle[z.split(':')[0]] = xtag.applyPseudos(z, tag.lifecycle[z], tag.pseudos, tag.lifecycle[z]);
       for (z in tag.methods) tag.prototype[z.split(':')[0]] = { value: xtag.applyPseudos(z, tag.methods[z], tag.pseudos, tag.methods[z]), enumerable: true };
       for (z in tag.accessors) parseAccessor(tag, z);
-
+      
+      var shadow = tag.shadow ? xtag.createFragment(tag.shadow) : null;
+      
       var ready = tag.lifecycle.created || tag.lifecycle.ready;
       tag.prototype.createdCallback = {
         enumerable: true,
         value: function(){
           var element = this;
+          if (shadow && this.createShadowRoot) {
+            var root = this.createShadowRoot();
+            root.appendChild(shadow.cloneNode(true));
+          }
           xtag.addEvents(this, tag.events);
-          tag.mixins.forEach(function(mixin){
-            if (xtag.mixins[mixin].events) xtag.addEvents(element, xtag.mixins[mixin].events);
-          });
           var output = ready ? ready.apply(this, arguments) : null;
           for (var name in tag.attributes) {
             var attr = tag.attributes[name],
@@ -429,7 +456,13 @@
       fireReady(_name);
       return reg;
     },
-
+    
+    /*
+      NEEDS MORE TESTING!
+      
+      Allows for async dependency resolution, fires when all passed-in elements are 
+      registered and parsed
+    */
     ready: function(names, fn){
       var obj = { tags: toArray(names), fn: fn };
       if (obj.tags.reduce(function(last, name){
@@ -522,6 +555,10 @@
     },
     pseudos: {
       __mixin__: {},
+      /*
+        
+        
+      */
       mixins: {
         onCompiled: function(fn, pseudo){
           var mixins = pseudo.source.__mixins__;
@@ -534,7 +571,7 @@
               });
               return fn.apply(self, args);
             };
-            case 'after': case null: return function(){
+            case null: case '': case 'after': return function(){
               var self = this,
                   args = arguments;
                   returns = fn.apply(self, args);
@@ -572,7 +609,7 @@
     clone: clone,
     typeOf: typeOf,
     toArray: toArray,
-
+    
     wrap: function (original, fn) {
       return function(){
         var args = arguments,
@@ -581,7 +618,10 @@
         return output;
       };
     },
-
+    /*
+      Recursively merges one object with another. The first argument is the destination object,
+      all other objects passed in as arguments are merged from right to left, conflicts are overwritten
+    */
     merge: function(source, k, v){
       if (typeOf(k) == 'string') return mergeOne(source, k, v);
       for (var i = 1, l = arguments.length; i < l; i++){
@@ -590,7 +630,11 @@
       }
       return source;
     },
-
+    
+    /*
+      ----- This should be simplified! -----
+      Generates a random ID string
+    */ 
     uid: function(){
       return Math.random().toString(36).substr(2,10);
     },
@@ -610,19 +654,19 @@
         });
       });
     },
-
+    
     requestFrame: (function(){
       var raf = win.requestAnimationFrame ||
                 win[prefix.lowercase + 'RequestAnimationFrame'] ||
                 function(fn){ return win.setTimeout(fn, 20); };
       return function(fn){ return raf(fn); };
     })(),
-
+    
     cancelFrame: (function(){
       var cancel = win.cancelAnimationFrame ||
                    win[prefix.lowercase + 'CancelAnimationFrame'] ||
                    win.clearTimeout;
-      return function(id){ return cancel(id); };
+      return function(id){ return cancel(id); };  
     })(),
 
     matchSelector: function (element, selector) {
@@ -662,7 +706,10 @@
     toggleClass: function (element, klass) {
       return xtag[xtag.hasClass(element, klass) ? 'removeClass' : 'addClass'].call(null, element, klass);
     },
-
+    
+    /*
+      Runs a query on only the children of an element
+    */
     queryChildren: function (element, selector) {
       var id = element.id,
         guid = element.id = id || 'x_' + xtag.uid(),
@@ -680,12 +727,15 @@
       }
       return toArray(result);
     },
-
+    /*
+      Creates a document fragment with the content passed in - content can be
+      a string of HTML, an element, or an array/collection of elements
+    */
     createFragment: function(content) {
       var frag = doc.createDocumentFragment();
       if (content) {
         var div = frag.appendChild(doc.createElement('div')),
-          nodes = toArray(content.nodeName ? arguments : !(div.innerHTML = content) || div.children),
+          nodes = toArray(content.nodeName ? arguments : !(div.innerHTML = typeof content == 'function' ? parseMultiline(content) : content) || div.children),
           length = nodes.length,
           index = 0;
         while (index < length) frag.insertBefore(nodes[index++], div);
@@ -693,7 +743,11 @@
       }
       return frag;
     },
-
+    
+    /*
+      Removes an element from the DOM for more performant node manipulation. The element
+      is placed back into the DOM at the place it was taken from.
+    */
     manipulate: function(element, fn){
       var next = element.nextSibling,
         parent = element.parentNode,
@@ -796,7 +850,9 @@
         var args = toArray(arguments),
             output = event.condition.apply(this, args.concat([event]));
         if (!output) return output;
-        if (e.type != key) {
+        // The second condition in this IF is to address the following Blink regression: https://code.google.com/p/chromium/issues/detail?id=367537
+        // Remove this when affected browser builds with this regression fall below 5% marketshare
+        if (e.type != key && (e.baseEvent && e.type != e.baseEvent.type)) {
           xtag.fireEvent(e.target, key, {
             baseEvent: e,
             detail: output !== true && (output.__stack__ = stack) ? output : { __stack__: stack }
@@ -872,7 +928,11 @@
         console.warn('This error may have been caused by a change in the fireEvent method', e);
       }
     },
-
+    
+    /*
+      Listens for insertion or removal of nodes from a given element using 
+      Mutation Observers, or Mutation Events as a fallback
+    */
     addObserver: function(element, type, fn){
       if (!element._records) {
         element._records = { inserted: [], removed: [] };
@@ -1045,7 +1105,7 @@ for (z in UIEventProto){
 
   win.xtag = xtag;
   if (typeof define == 'function' && define.amd) define(xtag);
-
+  
   doc.addEventListener('WebComponentsReady', function(){
     xtag.fireEvent(doc.body, 'DOMComponentsLoaded');
   });
